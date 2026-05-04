@@ -446,14 +446,13 @@ if setup.phase == IccPhase.CORRECTION and i_showAoi
     else if not na(aoiBox)
         box.set_right(aoiBox, bar_index)
 
-if prevPhase == IccPhase.CORRECTION and setup.phase == IccPhase.IDLE and not na(aoiBox)
-    box.delete(aoiBox)
-    aoiBox := na
-
-if validSignal and not na(aoiBox)
+if signalFired and not na(aoiBox)
     array.push(aoiHistory, aoiBox)
     if array.size(aoiHistory) > i_maxSetups
         box.delete(array.shift(aoiHistory))
+    aoiBox := na
+else if prevPhase == IccPhase.CORRECTION and setup.phase == IccPhase.IDLE and not na(aoiBox)
+    box.delete(aoiBox)
     aoiBox := na
 
 // ══════════════════════════════════════════════════════════════════════════════
