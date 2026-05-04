@@ -1,0 +1,590 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TropiSync — ICC (Indication, Correction, Continuation) Indicator
+// Inspired by Trades by Sci (Umar Ashraf)
+
+//@version=6
+indicator("ICC — Indication, Correction, Continuation", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 1: ENUMS
+// ══════════════════════════════════════════════════════════════════════════════
+
+enum Trend
+    BULLISH
+    BEARISH
+    NEUTRAL
+
+enum SwingType
+    SWING_HIGH
+    SWING_LOW
+
+enum StructureType
+    HH
+    HL
+    LH
+    LL
+
+enum BreakType
+    BOS
+    CHOCH
+    NONE
+
+enum IccPhase
+    IDLE
+    INDICATION
+    CORRECTION
+    CONTINUATION
+
+enum SignalDirection
+    LONG
+    SHORT
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 2: USER-DEFINED TYPES
+// ══════════════════════════════════════════════════════════════════════════════
+
+type SwingPoint
+    int barIdx
+    float price
+    SwingType swType
+    StructureType structType = StructureType.HH
+
+type StructureBreak
+    int barIdx
+    float price
+    BreakType breakType
+    Trend direction
+
+type Zone
+    float top
+    float bottom
+    int startBar
+    int endBar
+    bool active
+
+type IccSetup
+    IccPhase phase = IccPhase.IDLE
+    Trend bias = Trend.NEUTRAL
+    float indicationLevel = na
+    float indicationHigh = na
+    float indicationLow = na
+    int indicationBar = 0
+    float correctionExtreme = na
+    int correctionStartBar = 0
+    int correctionBars = 0
+    float aoiTop = na
+    float aoiBottom = na
+    bool priceEnteredAoi = false
+    float entryPrice = na
+    float stopLoss = na
+    float takeProfit1 = na
+    float takeProfit2 = na
+
+type MarketStructure
+    Trend trend = Trend.NEUTRAL
+    float lastSwingHigh = na
+    float lastSwingLow = na
+    float prevSwingHigh = na
+    float prevSwingLow = na
+    int lastSwingHighBar = 0
+    int lastSwingLowBar = 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 3: INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Swing Detection ---
+grpSwing = "Swing Detection"
+i_pivotLen = input.int(3, "Pivot Length", minval=1, maxval=10, group=grpSwing, tooltip="Bars left/right to confirm a swing point")
+
+// --- Market Structure ---
+grpStruct = "Market Structure"
+i_showSwings = input.bool(true, "Show Swing Labels", group=grpStruct)
+i_showStructure = input.bool(true, "Show BOS/CHoCH", group=grpStruct)
+i_showZigzag = input.bool(true, "Show Structure Zigzag", group=grpStruct)
+
+// --- ICC Settings ---
+grpIcc = "ICC Settings"
+i_fibUpper = input.float(0.50, "Fib Upper Level (AOI Top)", minval=0.1, maxval=0.9, step=0.01, group=grpIcc)
+i_fibLower = input.float(0.79, "Fib Lower Level (AOI Bottom)", minval=0.1, maxval=0.99, step=0.01, group=grpIcc)
+i_maxCorrBars = input.int(50, "Max Correction Bars", minval=10, maxval=200, group=grpIcc, tooltip="Invalidate if correction takes too long")
+i_minStrengthAtr = input.float(1.5, "Min Indication Strength (ATR×)", minval=0.5, maxval=5.0, step=0.1, group=grpIcc, tooltip="Minimum move size relative to ATR")
+
+// --- Volume Filter ---
+grpVol = "Volume Filter"
+i_useVolume = input.bool(false, "Require Volume Confirmation", group=grpVol)
+i_volMult = input.float(1.5, "Volume Multiplier (vs 20 SMA)", minval=1.0, maxval=5.0, step=0.1, group=grpVol)
+
+// --- Risk Management ---
+grpRisk = "Risk Management"
+i_rr1 = input.float(1.5, "R:R Target 1", minval=0.5, maxval=10.0, step=0.1, group=grpRisk)
+i_rr2 = input.float(3.0, "R:R Target 2", minval=1.0, maxval=20.0, step=0.1, group=grpRisk)
+i_atrStopMult = input.float(1.0, "ATR Stop Buffer Multiplier", minval=0.1, maxval=3.0, step=0.1, group=grpRisk)
+
+// --- Multi-Timeframe ---
+grpMtf = "Multi-Timeframe"
+i_useMtf = input.bool(false, "Use HTF Confirmation", group=grpMtf)
+i_htfTf = input.timeframe("60", "HTF Timeframe", group=grpMtf)
+
+// --- Session Filter ---
+grpSess = "Session Filter"
+i_useSession = input.bool(false, "Filter by Trading Session", group=grpSess)
+i_session = input.session("0930-1600", "Trading Session", group=grpSess)
+
+// --- Visuals ---
+grpVis = "Visuals"
+i_showAoi = input.bool(true, "Show AOI Zones", group=grpVis)
+i_showFibLevels = input.bool(true, "Show Fib Levels", group=grpVis)
+i_showSignals = input.bool(true, "Show Entry Signals", group=grpVis)
+i_showLevels = input.bool(true, "Show Entry/SL/TP Lines", group=grpVis)
+i_showTable = input.bool(true, "Show Info Dashboard", group=grpVis)
+i_showPhaseBg = input.bool(false, "Show Phase Background Color", group=grpVis)
+i_maxSetups = input.int(5, "Max Historical Setups Shown", minval=1, maxval=20, group=grpVis)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 4: CONSTANTS & COLORS
+// ══════════════════════════════════════════════════════════════════════════════
+
+color C_BULL = color.new(#089981, 0)
+color C_BEAR = color.new(#f23645, 0)
+color C_BULL_LIGHT = color.new(#089981, 80)
+color C_BEAR_LIGHT = color.new(#f23645, 80)
+color C_AOI = color.new(#ffeb3b, 85)
+color C_AOI_BORDER = color.new(#ffeb3b, 40)
+color C_NEUTRAL = color.new(#787b86, 0)
+color C_ZIGZAG = color.new(#787b86, 50)
+color C_BOS = color.new(#2962ff, 0)
+color C_CHOCH = color.new(#e040fb, 0)
+color C_ENTRY = color.new(#00e676, 0)
+color C_SL = color.new(#ff1744, 0)
+color C_TP = color.new(#2979ff, 0)
+color C_BG_INDICATION = color.new(#2962ff, 93)
+color C_BG_CORRECTION = color.new(#ffeb3b, 93)
+color C_BG_CONTINUATION = color.new(#00e676, 93)
+
+var float atrVal = na
+atrVal := ta.atr(14)
+
+var float volSma = na
+volSma := ta.sma(volume, 20)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 5: HELPER FUNCTIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+calcFibLevel(float highVal, float lowVal, float level, bool isBull) =>
+    if isBull
+        highVal - (highVal - lowVal) * level
+    else
+        lowVal + (highVal - lowVal) * level
+
+isInSession() =>
+    not i_useSession or not na(time(timeframe.period, i_session))
+
+hasVolumeConfirmation() =>
+    not i_useVolume or (volume > volSma * i_volMult)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 6: UDT METHODS
+// ══════════════════════════════════════════════════════════════════════════════
+
+method isValid(Zone z) =>
+    not na(z.top) and not na(z.bottom) and z.active
+
+method contains(Zone z, float price) =>
+    z.isValid() and price >= z.bottom and price <= z.top
+
+method legSize(IccSetup s) =>
+    math.abs(s.indicationHigh - s.indicationLow)
+
+method isInvalidated(IccSetup s) =>
+    if s.phase != IccPhase.CORRECTION
+        false
+    else
+        s.correctionBars > i_maxCorrBars or
+         (s.bias == Trend.BULLISH and low < s.indicationLow) or
+         (s.bias == Trend.BEARISH and high > s.indicationHigh)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 7: SWING DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+var array<SwingPoint> swingHighs = array.new<SwingPoint>()
+var array<SwingPoint> swingLows = array.new<SwingPoint>()
+
+ph = ta.pivothigh(high, i_pivotLen, i_pivotLen)
+pl = ta.pivotlow(low, i_pivotLen, i_pivotLen)
+
+var SwingPoint newSh = na
+var SwingPoint newSl = na
+newSh := na
+newSl := na
+
+if not na(ph)
+    newSh := SwingPoint.new(bar_index - i_pivotLen, ph, SwingType.SWING_HIGH)
+    array.push(swingHighs, newSh)
+    if array.size(swingHighs) > 50
+        array.shift(swingHighs)
+
+if not na(pl)
+    newSl := SwingPoint.new(bar_index - i_pivotLen, pl, SwingType.SWING_LOW)
+    array.push(swingLows, newSl)
+    if array.size(swingLows) > 50
+        array.shift(swingLows)
+
+// Draw swing labels
+if i_showSwings and not na(newSh)
+    label.new(newSh.barIdx, newSh.price, "▼", style=label.style_none, textcolor=C_BEAR, size=size.tiny)
+
+if i_showSwings and not na(newSl)
+    label.new(newSl.barIdx, newSl.price, "▲", style=label.style_none, textcolor=C_BULL, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 8: MARKET STRUCTURE
+// ══════════════════════════════════════════════════════════════════════════════
+
+var MarketStructure ms = MarketStructure.new()
+var BreakType currentBreak = BreakType.NONE
+var Trend breakDirection = Trend.NEUTRAL
+var float breakLevel = na
+var int breakBar = na
+
+currentBreak := BreakType.NONE
+breakDirection := Trend.NEUTRAL
+
+if not na(newSh)
+    StructureType shType = na
+    if not na(ms.lastSwingHigh)
+        if newSh.price > ms.lastSwingHigh
+            shType := StructureType.HH
+        else
+            shType := StructureType.LH
+    newSh.structType := shType
+    ms.prevSwingHigh := ms.lastSwingHigh
+    ms.lastSwingHigh := newSh.price
+    ms.lastSwingHighBar := newSh.barIdx
+
+    if i_showSwings and not na(shType)
+        lbl = shType == StructureType.HH ? "HH" : "LH"
+        label.new(newSh.barIdx, newSh.price, lbl, style=label.style_none, textcolor=shType == StructureType.HH ? C_BULL : C_BEAR, size=size.tiny, yloc=yloc.abovebar)
+
+if not na(newSl)
+    StructureType slType = na
+    if not na(ms.lastSwingLow)
+        if newSl.price < ms.lastSwingLow
+            slType := StructureType.LL
+        else
+            slType := StructureType.HL
+    newSl.structType := slType
+    ms.prevSwingLow := ms.lastSwingLow
+    ms.lastSwingLow := newSl.price
+    ms.lastSwingLowBar := newSl.barIdx
+
+    if i_showSwings and not na(slType)
+        lbl = slType == StructureType.HL ? "HL" : "LL"
+        label.new(newSl.barIdx, newSl.price, lbl, style=label.style_none, textcolor=slType == StructureType.HL ? C_BULL : C_BEAR, size=size.tiny, yloc=yloc.belowbar)
+
+// BOS / CHoCH Detection
+if not na(ms.prevSwingHigh) and not na(ms.lastSwingHigh)
+    if close > ms.lastSwingHigh and close[1] <= ms.lastSwingHigh
+        if ms.trend == Trend.BULLISH
+            currentBreak := BreakType.BOS
+        else
+            currentBreak := BreakType.CHOCH
+        breakDirection := Trend.BULLISH
+        breakLevel := ms.lastSwingHigh
+        breakBar := bar_index
+        ms.trend := Trend.BULLISH
+
+if not na(ms.prevSwingLow) and not na(ms.lastSwingLow)
+    if close < ms.lastSwingLow and close[1] >= ms.lastSwingLow
+        if ms.trend == Trend.BEARISH
+            currentBreak := BreakType.BOS
+        else
+            currentBreak := BreakType.CHOCH
+        breakDirection := Trend.BEARISH
+        breakLevel := ms.lastSwingLow
+        breakBar := bar_index
+        ms.trend := Trend.BEARISH
+
+// Draw structure break
+if i_showStructure and currentBreak != BreakType.NONE
+    breakColor = currentBreak == BreakType.BOS ? C_BOS : C_CHOCH
+    breakStyle = currentBreak == BreakType.BOS ? line.style_solid : line.style_dashed
+    breakText = (currentBreak == BreakType.BOS ? "BOS" : "CHoCH") + (breakDirection == Trend.BULLISH ? " ▲" : " ▼")
+
+    line.new(breakBar - 10, breakLevel, breakBar, breakLevel, color=breakColor, style=breakStyle, width=1)
+    label.new(breakBar, breakLevel, breakText, style=label.style_none, textcolor=breakColor, size=size.small)
+
+// Zigzag
+var int lastZigzagBar = na
+var float lastZigzagPrice = na
+var SwingType lastZigzagType = SwingType.SWING_HIGH
+
+if i_showZigzag
+    if not na(newSh) and not na(lastZigzagBar)
+        if lastZigzagType == SwingType.SWING_LOW or na(lastZigzagType)
+            line.new(lastZigzagBar, lastZigzagPrice, newSh.barIdx, newSh.price, color=C_ZIGZAG, width=1)
+            lastZigzagBar := newSh.barIdx
+            lastZigzagPrice := newSh.price
+            lastZigzagType := SwingType.SWING_HIGH
+        else if newSh.price > lastZigzagPrice
+            lastZigzagBar := newSh.barIdx
+            lastZigzagPrice := newSh.price
+
+    if not na(newSl) and not na(lastZigzagBar)
+        if lastZigzagType == SwingType.SWING_HIGH or na(lastZigzagType)
+            line.new(lastZigzagBar, lastZigzagPrice, newSl.barIdx, newSl.price, color=C_ZIGZAG, width=1)
+            lastZigzagBar := newSl.barIdx
+            lastZigzagPrice := newSl.price
+            lastZigzagType := SwingType.SWING_LOW
+        else if newSl.price < lastZigzagPrice
+            lastZigzagBar := newSl.barIdx
+            lastZigzagPrice := newSl.price
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 9: ICC STATE MACHINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+var IccSetup setup = IccSetup.new()
+var int setupCount = 0
+
+// IDLE → INDICATION
+if setup.phase == IccPhase.IDLE and currentBreak != BreakType.NONE
+    moveSize = math.abs(close - breakLevel)
+    if moveSize >= atrVal * i_minStrengthAtr and hasVolumeConfirmation()
+        setup.phase := IccPhase.INDICATION
+        setup.bias := breakDirection
+        setup.indicationLevel := breakLevel
+        setup.indicationBar := breakBar
+        if breakDirection == Trend.BULLISH
+            setup.indicationHigh := high
+            setup.indicationLow := ms.lastSwingLow
+        else
+            setup.indicationHigh := ms.lastSwingHigh
+            setup.indicationLow := low
+        setup.priceEnteredAoi := false
+        setup.correctionBars := 0
+
+// INDICATION → CORRECTION
+if setup.phase == IccPhase.INDICATION
+    isCounterMove = (setup.bias == Trend.BULLISH and close < close[1]) or (setup.bias == Trend.BEARISH and close > close[1])
+    if isCounterMove
+        setup.phase := IccPhase.CORRECTION
+        setup.correctionStartBar := bar_index
+        setup.correctionExtreme := setup.bias == Trend.BULLISH ? low : high
+        leg = setup.legSize()
+        if setup.bias == Trend.BULLISH
+            setup.aoiTop := setup.indicationHigh - leg * i_fibUpper
+            setup.aoiBottom := setup.indicationHigh - leg * i_fibLower
+        else
+            setup.aoiTop := setup.indicationLow + leg * i_fibLower
+            setup.aoiBottom := setup.indicationLow + leg * i_fibUpper
+
+// CORRECTION phase logic
+if setup.phase == IccPhase.CORRECTION
+    setup.correctionBars += 1
+
+    if setup.bias == Trend.BULLISH
+        setup.correctionExtreme := math.min(nz(setup.correctionExtreme, low), low)
+    else
+        setup.correctionExtreme := math.max(nz(setup.correctionExtreme, high), high)
+
+    aoiZone = Zone.new(setup.aoiTop, setup.aoiBottom, setup.correctionStartBar, bar_index, true)
+    if setup.bias == Trend.BULLISH and low <= setup.aoiTop and low >= setup.aoiBottom
+        setup.priceEnteredAoi := true
+    if setup.bias == Trend.BEARISH and high >= setup.aoiBottom and high <= setup.aoiTop
+        setup.priceEnteredAoi := true
+
+    // Check invalidation
+    if setup.isInvalidated()
+        setup.phase := IccPhase.IDLE
+        setup.bias := Trend.NEUTRAL
+
+    // CORRECTION → CONTINUATION
+    if setup.priceEnteredAoi and isInSession()
+        isContinuation = false
+        if setup.bias == Trend.BULLISH and close > setup.indicationHigh
+            isContinuation := true
+        if setup.bias == Trend.BEARISH and close < setup.indicationLow
+            isContinuation := true
+
+        if isContinuation
+            setup.phase := IccPhase.CONTINUATION
+            setup.entryPrice := close
+            riskAmt = 0.0
+            if setup.bias == Trend.BULLISH
+                setup.stopLoss := setup.correctionExtreme - atrVal * i_atrStopMult
+                riskAmt := setup.entryPrice - setup.stopLoss
+                setup.takeProfit1 := setup.entryPrice + riskAmt * i_rr1
+                setup.takeProfit2 := setup.entryPrice + riskAmt * i_rr2
+            else
+                setup.stopLoss := setup.correctionExtreme + atrVal * i_atrStopMult
+                riskAmt := setup.stopLoss - setup.entryPrice
+                setup.takeProfit1 := setup.entryPrice - riskAmt * i_rr1
+                setup.takeProfit2 := setup.entryPrice - riskAmt * i_rr2
+
+// CONTINUATION → fire signal and reset
+var bool signalFired = false
+signalFired := false
+
+if setup.phase == IccPhase.CONTINUATION
+    signalFired := true
+    setupCount += 1
+    setup.phase := IccPhase.IDLE
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 10: ZONE CALCULATION & DRAWING
+// ══════════════════════════════════════════════════════════════════════════════
+
+var array<box> aoiBoxes = array.new<box>()
+var array<line> fibLines = array.new<line>()
+
+if setup.phase == IccPhase.CORRECTION and i_showAoi and setup.priceEnteredAoi == false
+    if bar_index % 5 == 0
+        if array.size(aoiBoxes) > i_maxSetups * 2
+            box.delete(array.shift(aoiBoxes))
+        array.push(aoiBoxes, box.new(setup.correctionStartBar, setup.aoiTop, bar_index + 5, setup.aoiBottom, border_color=C_AOI_BORDER, bgcolor=C_AOI, border_width=1))
+
+if setup.phase == IccPhase.CORRECTION and setup.priceEnteredAoi and i_showAoi
+    if array.size(aoiBoxes) > 0
+        lastBox = array.last(aoiBoxes)
+        box.set_right(lastBox, bar_index)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 11: MULTI-TIMEFRAME DATA
+// ══════════════════════════════════════════════════════════════════════════════
+
+var Trend htfTrend = Trend.NEUTRAL
+
+if i_useMtf
+    [htfHigh, htfLow, htfClose] = request.security(syminfo.tickerid, i_htfTf, [high, low, close])
+    htfMa = ta.sma(htfClose, 20)
+    if htfClose > htfMa
+        htfTrend := Trend.BULLISH
+    else if htfClose < htfMa
+        htfTrend := Trend.BEARISH
+    else
+        htfTrend := Trend.NEUTRAL
+
+mtfAligned() =>
+    not i_useMtf or htfTrend == setup.bias or htfTrend == Trend.NEUTRAL
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 12: MAIN LOGIC (per-bar orchestration)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// The main logic is embedded in sections 7-9 above (swing detection → structure → state machine)
+// This section handles the final signal validation
+
+var SignalDirection lastSignalDir = SignalDirection.LONG
+var float lastEntry = na
+var float lastSl = na
+var float lastTp1 = na
+var float lastTp2 = na
+var int lastSignalBar = na
+
+validSignal = signalFired and mtfAligned() and isInSession()
+
+if validSignal
+    lastSignalDir := setup.bias == Trend.BULLISH ? SignalDirection.LONG : SignalDirection.SHORT
+    lastEntry := setup.entryPrice
+    lastSl := setup.stopLoss
+    lastTp1 := setup.takeProfit1
+    lastTp2 := setup.takeProfit2
+    lastSignalBar := bar_index
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 13: VISUAL LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Entry signals
+if validSignal and i_showSignals
+    if lastSignalDir == SignalDirection.LONG
+        label.new(bar_index, low, "▲ LONG", style=label.style_label_up, color=C_ENTRY, textcolor=color.white, size=size.normal)
+    else
+        label.new(bar_index, high, "▼ SHORT", style=label.style_label_down, color=C_SL, textcolor=color.white, size=size.normal)
+
+// Entry / SL / TP lines
+if validSignal and i_showLevels
+    lineLen = 20
+    line.new(bar_index, lastEntry, bar_index + lineLen, lastEntry, color=C_ENTRY, width=2, style=line.style_solid)
+    line.new(bar_index, lastSl, bar_index + lineLen, lastSl, color=C_SL, width=2, style=line.style_dotted)
+    line.new(bar_index, lastTp1, bar_index + lineLen, lastTp1, color=C_TP, width=1, style=line.style_dashed)
+    line.new(bar_index, lastTp2, bar_index + lineLen, lastTp2, color=C_TP, width=1, style=line.style_dashed)
+
+    label.new(bar_index + lineLen, lastEntry, "Entry " + str.tostring(lastEntry, format.mintick), style=label.style_none, textcolor=C_ENTRY, size=size.tiny)
+    label.new(bar_index + lineLen, lastSl, "SL " + str.tostring(lastSl, format.mintick), style=label.style_none, textcolor=C_SL, size=size.tiny)
+    label.new(bar_index + lineLen, lastTp1, "TP1 " + str.tostring(lastTp1, format.mintick), style=label.style_none, textcolor=C_TP, size=size.tiny)
+    label.new(bar_index + lineLen, lastTp2, "TP2 " + str.tostring(lastTp2, format.mintick), style=label.style_none, textcolor=C_TP, size=size.tiny)
+
+// Phase background
+bgcolor(i_showPhaseBg and setup.phase == IccPhase.INDICATION ? C_BG_INDICATION : na)
+bgcolor(i_showPhaseBg and setup.phase == IccPhase.CORRECTION ? C_BG_CORRECTION : na)
+bgcolor(i_showPhaseBg and validSignal ? C_BG_CONTINUATION : na)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 14: INFO TABLE / DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+
+if i_showTable
+    var table dashboard = table.new(position.top_right, 2, 7, bgcolor=color.new(#1e222d, 10), border_width=1, border_color=color.new(#363a45, 0))
+
+    phaseText = switch setup.phase
+        IccPhase.IDLE => "IDLE"
+        IccPhase.INDICATION => "INDICATION"
+        IccPhase.CORRECTION => "CORRECTION"
+        IccPhase.CONTINUATION => "CONTINUATION"
+
+    phaseColor = switch setup.phase
+        IccPhase.IDLE => C_NEUTRAL
+        IccPhase.INDICATION => C_BOS
+        IccPhase.CORRECTION => C_AOI_BORDER
+        IccPhase.CONTINUATION => C_ENTRY
+
+    biasText = switch ms.trend
+        Trend.BULLISH => "BULLISH"
+        Trend.BEARISH => "BEARISH"
+        Trend.NEUTRAL => "NEUTRAL"
+
+    biasColor = switch ms.trend
+        Trend.BULLISH => C_BULL
+        Trend.BEARISH => C_BEAR
+        Trend.NEUTRAL => C_NEUTRAL
+
+    corrDepth = setup.phase == IccPhase.CORRECTION and setup.legSize() > 0 ?
+     str.tostring(math.abs(setup.correctionExtreme - setup.indicationHigh) / setup.legSize() * 100, "#.0") + "%" : "—"
+
+    table.cell(dashboard, 0, 0, "ICC Phase", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 0, phaseText, text_color=phaseColor, text_size=size.small)
+    table.cell(dashboard, 0, 1, "Bias", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 1, biasText, text_color=biasColor, text_size=size.small)
+    table.cell(dashboard, 0, 2, "Trend", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 2, biasText, text_color=biasColor, text_size=size.small)
+    table.cell(dashboard, 0, 3, "Correction Depth", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 3, corrDepth, text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 0, 4, "Setups Found", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 4, str.tostring(setupCount), text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 0, 5, "Last Signal", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 5, not na(lastSignalBar) ? (lastSignalDir == SignalDirection.LONG ? "LONG" : "SHORT") : "—", text_color=not na(lastSignalBar) ? (lastSignalDir == SignalDirection.LONG ? C_BULL : C_BEAR) : C_NEUTRAL, text_size=size.small)
+    table.cell(dashboard, 0, 6, "HTF Aligned", text_color=color.white, text_size=size.small)
+    table.cell(dashboard, 1, 6, i_useMtf ? (mtfAligned() ? "✓" : "✗") : "OFF", text_color=i_useMtf ? (mtfAligned() ? C_BULL : C_BEAR) : C_NEUTRAL, text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 15: ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(setup.phase == IccPhase.INDICATION and setup.phase[1] == IccPhase.IDLE, "Indication Detected", "ICC: Indication phase started")
+alertcondition(setup.phase == IccPhase.CORRECTION and setup.phase[1] == IccPhase.INDICATION, "Correction Started", "ICC: Correction phase — watching for AOI entry")
+alertcondition(setup.phase == IccPhase.CORRECTION and setup.priceEnteredAoi and not setup.priceEnteredAoi[1], "Price Entered AOI", "ICC: Price entered the Area of Interest zone")
+alertcondition(validSignal and lastSignalDir == SignalDirection.LONG, "Continuation Signal (Long)", "ICC: LONG continuation signal fired")
+alertcondition(validSignal and lastSignalDir == SignalDirection.SHORT, "Continuation Signal (Short)", "ICC: SHORT continuation signal fired")
+alertcondition(setup.phase == IccPhase.IDLE and setup.phase[1] == IccPhase.CORRECTION, "Setup Invalidated", "ICC: Setup invalidated — correction failed")
+alertcondition(currentBreak == BreakType.BOS, "BOS Detected", "ICC: Break of Structure detected")
+alertcondition(currentBreak == BreakType.CHOCH, "CHoCH Detected", "ICC: Change of Character detected")
+
+// Dynamic alert with details
+if validSignal
+    dir = lastSignalDir == SignalDirection.LONG ? "LONG" : "SHORT"
+    msg = "ICC " + dir + " Signal | Entry: " + str.tostring(lastEntry, format.mintick) + " | SL: " + str.tostring(lastSl, format.mintick) + " | TP1: " + str.tostring(lastTp1, format.mintick) + " | TP2: " + str.tostring(lastTp2, format.mintick)
+    alert(msg, alert.freq_once_per_bar_close)
