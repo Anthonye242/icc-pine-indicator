@@ -348,6 +348,11 @@ if i_showZigzag
 
 var IccSetup setup = IccSetup.new()
 var int setupCount = 0
+var IccPhase prevPhase = IccPhase.IDLE
+var bool prevPriceEnteredAoi = false
+
+prevPhase := setup.phase
+prevPriceEnteredAoi := setup.priceEnteredAoi
 
 // IDLE → INDICATION
 if setup.phase == IccPhase.IDLE and currentBreak != BreakType.NONE
@@ -574,12 +579,12 @@ if i_showTable
 // SECTION 15: ALERTS
 // ══════════════════════════════════════════════════════════════════════════════
 
-alertcondition(setup.phase == IccPhase.INDICATION and setup.phase[1] == IccPhase.IDLE, "Indication Detected", "ICC: Indication phase started")
-alertcondition(setup.phase == IccPhase.CORRECTION and setup.phase[1] == IccPhase.INDICATION, "Correction Started", "ICC: Correction phase — watching for AOI entry")
-alertcondition(setup.phase == IccPhase.CORRECTION and setup.priceEnteredAoi and not setup.priceEnteredAoi[1], "Price Entered AOI", "ICC: Price entered the Area of Interest zone")
+alertcondition(setup.phase == IccPhase.INDICATION and prevPhase == IccPhase.IDLE, "Indication Detected", "ICC: Indication phase started")
+alertcondition(setup.phase == IccPhase.CORRECTION and prevPhase == IccPhase.INDICATION, "Correction Started", "ICC: Correction phase — watching for AOI entry")
+alertcondition(setup.phase == IccPhase.CORRECTION and setup.priceEnteredAoi and not prevPriceEnteredAoi, "Price Entered AOI", "ICC: Price entered the Area of Interest zone")
 alertcondition(validSignal and lastSignalDir == SignalDirection.LONG, "Continuation Signal (Long)", "ICC: LONG continuation signal fired")
 alertcondition(validSignal and lastSignalDir == SignalDirection.SHORT, "Continuation Signal (Short)", "ICC: SHORT continuation signal fired")
-alertcondition(setup.phase == IccPhase.IDLE and setup.phase[1] == IccPhase.CORRECTION, "Setup Invalidated", "ICC: Setup invalidated — correction failed")
+alertcondition(setup.phase == IccPhase.IDLE and prevPhase == IccPhase.CORRECTION, "Setup Invalidated", "ICC: Setup invalidated — correction failed")
 alertcondition(currentBreak == BreakType.BOS, "BOS Detected", "ICC: Break of Structure detected")
 alertcondition(currentBreak == BreakType.CHOCH, "CHoCH Detected", "ICC: Change of Character detected")
 
