@@ -245,37 +245,43 @@ var int breakBar = na
 currentBreak := BreakType.NONE
 breakDirection := Trend.NEUTRAL
 
+var bool isHH = false
+var bool isLH = false
+var bool isHL = false
+var bool isLL = false
+isHH := false
+isLH := false
+isHL := false
+isLL := false
+
 if not na(newSh)
-    StructureType shType = na
     if not na(ms.lastSwingHigh)
         if newSh.price > ms.lastSwingHigh
-            shType := StructureType.HH
+            newSh.structType := StructureType.HH
+            isHH := true
         else
-            shType := StructureType.LH
-    newSh.structType := shType
+            newSh.structType := StructureType.LH
+            isLH := true
     ms.prevSwingHigh := ms.lastSwingHigh
     ms.lastSwingHigh := newSh.price
     ms.lastSwingHighBar := newSh.barIdx
 
-    if i_showSwings and not na(shType)
-        lbl = shType == StructureType.HH ? "HH" : "LH"
-        label.new(newSh.barIdx, newSh.price, lbl, style=label.style_none, textcolor=shType == StructureType.HH ? C_BULL : C_BEAR, size=size.tiny, yloc=yloc.abovebar)
-
 if not na(newSl)
-    StructureType slType = na
     if not na(ms.lastSwingLow)
         if newSl.price < ms.lastSwingLow
-            slType := StructureType.LL
+            newSl.structType := StructureType.LL
+            isLL := true
         else
-            slType := StructureType.HL
-    newSl.structType := slType
+            newSl.structType := StructureType.HL
+            isHL := true
     ms.prevSwingLow := ms.lastSwingLow
     ms.lastSwingLow := newSl.price
     ms.lastSwingLowBar := newSl.barIdx
 
-    if i_showSwings and not na(slType)
-        lbl = slType == StructureType.HL ? "HL" : "LL"
-        label.new(newSl.barIdx, newSl.price, lbl, style=label.style_none, textcolor=slType == StructureType.HL ? C_BULL : C_BEAR, size=size.tiny, yloc=yloc.belowbar)
+plotshape(i_showSwings and isHH, "HH", shape.triangledown, location.abovebar, C_BULL, offset=-i_pivotLen, text="HH", textcolor=C_BULL, size=size.tiny)
+plotshape(i_showSwings and isLH, "LH", shape.triangledown, location.abovebar, C_BEAR, offset=-i_pivotLen, text="LH", textcolor=C_BEAR, size=size.tiny)
+plotshape(i_showSwings and isHL, "HL", shape.triangleup, location.belowbar, C_BULL, offset=-i_pivotLen, text="HL", textcolor=C_BULL, size=size.tiny)
+plotshape(i_showSwings and isLL, "LL", shape.triangleup, location.belowbar, C_BEAR, offset=-i_pivotLen, text="LL", textcolor=C_BEAR, size=size.tiny)
 
 // BOS / CHoCH Detection
 if not na(ms.prevSwingHigh) and not na(ms.lastSwingHigh)
