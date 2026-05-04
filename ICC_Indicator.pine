@@ -95,7 +95,7 @@ type MarketStructure
 
 // --- Swing Detection ---
 grpSwing = "Swing Detection"
-i_pivotLen = input.int(3, "Pivot Length", minval=1, maxval=10, group=grpSwing, tooltip="Bars left/right to confirm a swing point")
+i_pivotLen = input.int(5, "Pivot Length", minval=1, maxval=20, group=grpSwing, tooltip="Bars left/right to confirm a swing point. Higher = fewer, more significant swings.")
 
 // --- Market Structure ---
 grpStruct = "Market Structure"
@@ -232,13 +232,6 @@ if not na(pl)
     if array.size(swingLows) > 50
         array.shift(swingLows)
 
-// Draw swing labels
-if i_showSwings and not na(newSh)
-    label.new(newSh.barIdx, newSh.price, "▼", style=label.style_none, textcolor=C_BEAR, size=size.tiny)
-
-if i_showSwings and not na(newSl)
-    label.new(newSl.barIdx, newSl.price, "▲", style=label.style_none, textcolor=C_BULL, size=size.tiny)
-
 // ══════════════════════════════════════════════════════════════════════════════
 // SECTION 8: MARKET STRUCTURE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -313,7 +306,7 @@ if i_showStructure and currentBreak != BreakType.NONE
     breakStyle = currentBreak == BreakType.BOS ? line.style_solid : line.style_dashed
     breakText = (currentBreak == BreakType.BOS ? "BOS" : "CHoCH") + (breakDirection == Trend.BULLISH ? " ▲" : " ▼")
 
-    line.new(breakBar - 10, breakLevel, breakBar, breakLevel, color=breakColor, style=breakStyle, width=1)
+    line.new(breakBar - i_pivotLen * 3, breakLevel, breakBar, breakLevel, color=breakColor, style=breakStyle, width=1)
     label.new(breakBar, breakLevel, breakText, style=label.style_none, textcolor=breakColor, size=size.small)
 
 // Zigzag
@@ -442,19 +435,26 @@ if setup.phase == IccPhase.CONTINUATION
 // SECTION 10: ZONE CALCULATION & DRAWING
 // ══════════════════════════════════════════════════════════════════════════════
 
-var array<box> aoiBoxes = array.new<box>()
-var array<line> fibLines = array.new<line>()
+var box aoiBox = na
+var array<box> aoiHistory = array.new<box>()
 
-if setup.phase == IccPhase.CORRECTION and i_showAoi and setup.priceEnteredAoi == false
-    if bar_index % 5 == 0
-        if array.size(aoiBoxes) > i_maxSetups * 2
-            box.delete(array.shift(aoiBoxes))
-        array.push(aoiBoxes, box.new(setup.correctionStartBar, setup.aoiTop, bar_index + 5, setup.aoiBottom, border_color=C_AOI_BORDER, bgcolor=C_AOI, border_width=1))
+if setup.phase == IccPhase.CORRECTION and i_showAoi
+    if prevPhase != IccPhase.CORRECTION
+        if not na(aoiBox)
+            box.delete(aoiBox)
+        aoiBox := box.new(setup.correctionStartBar, setup.aoiTop, bar_index, setup.aoiBottom, border_color=C_AOI_BORDER, bgcolor=C_AOI, border_width=1)
+    else if not na(aoiBox)
+        box.set_right(aoiBox, bar_index)
 
-if setup.phase == IccPhase.CORRECTION and setup.priceEnteredAoi and i_showAoi
-    if array.size(aoiBoxes) > 0
-        lastBox = array.last(aoiBoxes)
-        box.set_right(lastBox, bar_index)
+if prevPhase == IccPhase.CORRECTION and setup.phase == IccPhase.IDLE and not na(aoiBox)
+    box.delete(aoiBox)
+    aoiBox := na
+
+if validSignal and not na(aoiBox)
+    array.push(aoiHistory, aoiBox)
+    if array.size(aoiHistory) > i_maxSetups
+        box.delete(array.shift(aoiHistory))
+    aoiBox := na
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SECTION 11: MULTI-TIMEFRAME DATA
